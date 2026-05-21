@@ -743,6 +743,318 @@ function GpkLoginModal({ onClose, onSuccess }) {
   );
 }
 
+
+function JadualAnjalPanel({ selectedTarikh, selectedHari, guruList, showToast, onError }) {
+  const [anjalData, setAnjalData] = useState(null);
+  const [anjalItems, setAnjalItems] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const sortPeriod = (a, b) => Number(a || 0) - Number(b || 0);
+  const kelasOrder = (kelas) => {
+    const text = String(kelas || '').toUpperCase().replace(/\s+/g, '');
+    const match = text.match(/^([1-6])([A-Z]+)/);
+    const order = { S: 1, K: 2, B: 3 };
+    if (!match) return { tahun: 99, susunan: 99, text };
+    return { tahun: Number(match[1]), susunan: order[match[2].charAt(0)] || 50, text };
+  };
+  const compareKelas = (a, b) => {
+    const ka = kelasOrder(a);
+    const kb = kelasOrder(b);
+    if (ka.tahun !== kb.tahun) return ka.tahun - kb.tahun;
+    if (ka.susunan !== kb.susunan) return ka.susunan - kb.susunan;
+    return ka.text.localeCompare(kb.text);
+  };
+  const sortedItems = [...anjalItems].sort((a, b) => {
+    const pc = sortPeriod(a.period_relief, b.period_relief);
+    if (pc !== 0) return pc;
+    return compareKelas(a.kelas, b.kelas);
+  });
+  const periodList = [...new Set(sortedItems.map(i => String(i.period_relief || '')).filter(Boolean))].sort(sortPeriod);
+  const kelasList = [...new Set(sortedItems.map(i => String(i.kelas || '')).filter(Boolean))].sort(compareKelas);
+  const byKelasPeriod = {};
+  sortedItems.forEach(item => {
+    byKelasPeriod[`${item.kelas}|${item.period_relief}`] = item;
+  });
+
+  const parseCandidates = (item) => {
+    const names = [];
+    const add = (name) => {
+      const clean = String(name || '').trim();
+      if (!clean) return;
+      if (!names.some(n => n.toUpperCase() === clean.toUpperCase())) names.push(clean);
+    };
+    add(item.guru_dipilih);
+    add(item.guru_dicadang);
+    String(item.cadangan_lain || '').split('|').forEach(add);
+    return names;
+  };
+
+  const recalcWarnings = (items) => {
+    const selectedByPeriod = {};
+    items.forEach(item => {
+      const guru = String(item.guru_dipilih || item.guru_dicadang || '').trim().toUpperCase();
+      const p = String(item.period_relief || '');
+      if (!guru || !p) return;
+      if (!selectedByPeriod[p]) selectedByPeriod[p] = {};
+      selectedByPeriod[p][guru] = (selectedByPeriod[p][guru] || 0) + 1;
+    });
+
+    return items.map(item => {
+      const guru = String(item.guru_dipilih || item.guru_dicadang || '').trim().toUpperCase();
+      const p = Number(item.period_relief || 0);
+      let warning = item.warning || '';
+      if (guru && selectedByPeriod[String(p)] && selectedByPeriod[String(p)][guru] > 1) {
+        warning = 'AMARAN: GURU SAMA DIPILIH PADA PERIOD YANG SAMA';
+      } else if (
+        guru &&
+        ((selectedByPeriod[String(p - 1)] && selectedByPeriod[String(p - 1)][guru]) ||
+         (selectedByPeriod[String(p + 1)] && selectedByPeriod[String(p + 1)][guru]))
+      ) {
+        warning = 'AMARAN: GURU DIPILIH BERTURUT-TURUT';
+      } else if (String(warning).startsWith('AMARAN:')) {
+        warning = '';
+      }
+      return { ...item, warning };
+    });
+  };
+
+  const loadAnjal = async () => {
+    if (!selectedTarikh) return;
+    setLoading(true);
+    try {
+      const res = await apiGet('getPaparanJadualAnjal', { tarikh: selectedTarikh });
+      if (res.success) {
+        setAnjalData(res);
+        setAnjalItems(recalcWarnings(res.items || []));
+      } else {
+        setAnjalData(null);
+        setAnjalItems([]);
+        onError(res.error || res.message || 'Gagal memuatkan Jadual Anjal.');
+      }
+    } catch (err) {
+      onError('Ralat semasa memuatkan Jadual Anjal.');
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    loadAnjal();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTarikh]);
+
+  const janaJadualAnjal = async () => {
+    if (!selectedTarikh) return;
+    const confirmText = anjalItems.length > 0
+      ? 'Jana semula Jadual Anjal? Draft lama tarikh ini akan diganti.'
+      : 'Jana draft Jadual Anjal untuk tarikh ini?';
+    if (!window.confirm(confirmText)) return;
+
+    setLoading(true);
+    try {
+      const res = await apiPost('janaCadanganJadualAnjal', { tarikh: selectedTarikh, save: true });
+      if (res.success) {
+        setAnjalData(res);
+        setAnjalItems(recalcWarnings(res.items || []));
+        showToast('DRAFT JADUAL ANJAL BERJAYA DIJANA');
+      } else {
+        onError(res.error || res.message || 'Gagal menjana Jadual Anjal.');
+      }
+    } catch (err) {
+      onError('Ralat semasa menjana Jadual Anjal.');
+    }
+    setLoading(false);
+  };
+
+  const updateGuru = (idItem, guru) => {
+    const next = anjalItems.map(item => {
+      if (item.id_item !== idItem) return item;
+      return {
+        ...item,
+        guru_dipilih: guru,
+        guru_dicadang: item.guru_dicadang || guru,
+        mode_pilihan: guru === item.guru_dicadang ? 'AUTO ANJAL' : 'MANUAL ANJAL',
+        updated_at: new Date().toISOString()
+      };
+    });
+    setAnjalItems(recalcWarnings(next));
+  };
+
+  const simpanJadualAnjal = async () => {
+    if (anjalItems.length === 0) {
+      alert('Tiada Jadual Anjal untuk disimpan.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await apiPost('simpanJadualAnjal', {
+        tarikh: selectedTarikh,
+        hari: selectedHari || anjalData?.hari,
+        id_anjal: anjalData?.id_anjal || anjalData?.header?.id_anjal,
+        items: anjalItems
+      });
+      if (res.success) {
+        showToast('JADUAL ANJAL BERJAYA DISIMPAN');
+        await loadAnjal();
+      } else {
+        onError(res.error || res.message || 'Gagal menyimpan Jadual Anjal.');
+      }
+    } catch (err) {
+      onError('Ralat semasa menyimpan Jadual Anjal.');
+    }
+    setSaving(false);
+  };
+
+  return (
+    <div className="bg-white p-6 rounded shadow border-2 border-yellow-300">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4 border-b pb-4 mb-4">
+        <div>
+          <h3 className="font-black text-slate-900 uppercase text-xl">JADUAL ANJAL</h3>
+          <p className="text-xs font-bold text-slate-500 uppercase mt-1">
+            Untuk hari ramai guru tidak hadir. Cadangan tidak semak free period asal dan sistem cuba elak guru berturut-turut.
+          </p>
+          <div className="mt-2 text-[11px] font-black text-slate-500 uppercase">
+            TARIKH: <span className="text-slate-900">{selectedTarikh}</span> • HARI: <span className="text-slate-900">{selectedHari || anjalData?.hari || '-'}</span>
+          </div>
+        </div>
+        <div className="flex flex-col sm:flex-row gap-2">
+          <button
+            onClick={loadAnjal}
+            disabled={loading}
+            className="px-4 py-2 bg-slate-100 text-slate-700 font-black rounded uppercase text-xs border border-slate-300 disabled:opacity-50"
+          >
+            Refresh Anjal
+          </button>
+          <button
+            onClick={janaJadualAnjal}
+            disabled={loading}
+            className="px-4 py-2 bg-yellow-400 text-slate-900 font-black rounded uppercase text-xs shadow hover:bg-yellow-500 disabled:opacity-50"
+          >
+            {loading ? 'MEMPROSES...' : anjalItems.length > 0 ? 'JANA SEMULA ANJAL' : 'JANA JADUAL ANJAL'}
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="p-6 text-center text-slate-500 font-bold uppercase">SEDANG MEMUATKAN JADUAL ANJAL...</div>
+      ) : anjalItems.length === 0 ? (
+        <div className="p-6 text-center bg-slate-50 border border-dashed border-slate-300 rounded">
+          <div className="font-black text-slate-600 uppercase">Belum ada draft Jadual Anjal untuk tarikh ini.</div>
+          <div className="text-xs font-bold text-slate-400 uppercase mt-1">Tekan butang Jana Jadual Anjal di atas.</div>
+        </div>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+            <div className="bg-slate-50 border border-slate-200 rounded p-3 text-center">
+              <div className="text-[10px] font-black text-slate-500 uppercase">Kelas</div>
+              <div className="text-xl font-black text-slate-900">{kelasList.length}</div>
+            </div>
+            <div className="bg-slate-50 border border-slate-200 rounded p-3 text-center">
+              <div className="text-[10px] font-black text-slate-500 uppercase">Period</div>
+              <div className="text-xl font-black text-slate-900">{periodList.length}</div>
+            </div>
+            <div className="bg-blue-50 border border-blue-100 rounded p-3 text-center">
+              <div className="text-[10px] font-black text-blue-600 uppercase">Slot</div>
+              <div className="text-xl font-black text-blue-700">{anjalItems.length}</div>
+            </div>
+            <div className="bg-red-50 border border-red-100 rounded p-3 text-center">
+              <div className="text-[10px] font-black text-red-600 uppercase">Amaran</div>
+              <div className="text-xl font-black text-red-700">{anjalItems.filter(i => i.warning).length}</div>
+            </div>
+          </div>
+
+          <div className="hidden lg:block overflow-x-auto border border-slate-300 rounded">
+            <table className="w-full text-[11px] border-collapse min-w-max">
+              <thead className="bg-[#0F172A] text-white uppercase">
+                <tr>
+                  <th className="p-2 border border-slate-700 sticky left-0 bg-[#0F172A] z-20">Kelas</th>
+                  {periodList.map(p => (
+                    <th key={p} className="p-2 border border-slate-700 min-w-[210px]">P{p}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {kelasList.map(kelas => (
+                  <tr key={kelas} className="align-top">
+                    <td className="p-2 border border-slate-300 font-black text-center sticky left-0 bg-slate-100 z-10">{kelas}</td>
+                    {periodList.map(p => {
+                      const item = byKelasPeriod[`${kelas}|${p}`];
+                      if (!item) return <td key={p} className="p-2 border border-slate-200 bg-slate-50 text-slate-300 text-center">-</td>;
+                      const candidates = parseCandidates(item);
+                      return (
+                        <td key={p} className={`p-2 border border-slate-200 ${item.warning ? 'bg-red-50' : 'bg-white'}`}>
+                          <div className="text-[9px] font-bold text-slate-400 uppercase mb-1">{item.masa || '-'}</div>
+                          <select
+                            value={item.guru_dipilih || item.guru_dicadang || ''}
+                            onChange={(e) => updateGuru(item.id_item, e.target.value)}
+                            className="w-full p-1.5 border border-slate-300 rounded bg-white font-black uppercase text-[10px] outline-none focus:border-slate-900"
+                          >
+                            <optgroup label="Cadangan Anjal">
+                              {candidates.map(nama => <option key={nama} value={nama}>{nama}</option>)}
+                            </optgroup>
+                            <optgroup label="Semua Guru">
+                              {guruList.filter(g => String(g.aktif || 'YA').toUpperCase() !== 'TIDAK').map(g => (
+                                <option key={g.nama_guru} value={g.nama_guru}>{g.nama_guru}</option>
+                              ))}
+                            </optgroup>
+                          </select>
+                          <div className="text-[9px] font-bold text-slate-400 uppercase mt-1 truncate" title={item.guru_asal || ''}>Asal: {item.guru_asal || '-'}</div>
+                          {item.warning && <div className="mt-1 text-[9px] font-black text-red-600 uppercase">{item.warning}</div>}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="lg:hidden flex flex-col gap-3">
+            {sortedItems.map(item => {
+              const candidates = parseCandidates(item);
+              return (
+                <div key={item.id_item} className={`border rounded p-3 ${item.warning ? 'bg-red-50 border-red-200' : 'bg-white border-slate-200'}`}>
+                  <div className="flex justify-between items-center mb-2">
+                    <div className="font-black text-slate-900 uppercase">{item.kelas}</div>
+                    <div className="text-[10px] font-black bg-slate-900 text-white px-2 py-0.5 rounded">P{item.period_relief} • {item.masa}</div>
+                  </div>
+                  <div className="text-[10px] font-bold text-slate-400 uppercase mb-1">Guru Dipilih</div>
+                  <select
+                    value={item.guru_dipilih || item.guru_dicadang || ''}
+                    onChange={(e) => updateGuru(item.id_item, e.target.value)}
+                    className="w-full p-2 border border-slate-300 rounded bg-white font-black uppercase text-xs"
+                  >
+                    <optgroup label="Cadangan Anjal">
+                      {candidates.map(nama => <option key={nama} value={nama}>{nama}</option>)}
+                    </optgroup>
+                    <optgroup label="Semua Guru">
+                      {guruList.filter(g => String(g.aktif || 'YA').toUpperCase() !== 'TIDAK').map(g => (
+                        <option key={g.nama_guru} value={g.nama_guru}>{g.nama_guru}</option>
+                      ))}
+                    </optgroup>
+                  </select>
+                  <div className="text-[10px] font-bold text-slate-400 uppercase mt-2">Guru Asal: {item.guru_asal || '-'}</div>
+                  {item.warning && <div className="mt-2 text-[10px] font-black text-red-600 uppercase bg-white border border-red-200 rounded p-2">{item.warning}</div>}
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-6 flex justify-end border-t pt-4">
+            <button
+              onClick={simpanJadualAnjal}
+              disabled={saving}
+              className="w-full sm:w-auto px-8 py-3 bg-[#0F172A] text-yellow-400 font-black rounded uppercase shadow hover:bg-slate-800 disabled:opacity-50"
+            >
+              {saving ? 'MENYIMPAN...' : 'SIMPAN JADUAL ANJAL'}
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function GpkPanel({ onClose, guruList, setGuruList, showToast, onSuccess, onError }) {
   const [selectedTarikh, setSelectedTarikh] = useState(() => {
     const d = new Date();
@@ -1133,6 +1445,15 @@ function GpkPanel({ onClose, guruList, setGuruList, showToast, onSuccess, onErro
             </div>
           </div>
         </div>
+
+
+        <JadualAnjalPanel
+          selectedTarikh={selectedTarikh}
+          selectedHari={selectedHari || gpkDashboard?.hari}
+          guruList={guruList}
+          showToast={showToast}
+          onError={onError}
+        />
 
         <div className="bg-white p-6 rounded shadow border border-slate-200">
           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center border-b pb-2 mb-2 gap-3">
