@@ -1077,6 +1077,7 @@ function GpkPanel({ onClose, guruList, setGuruList, showToast, onSuccess, onErro
   
   const [pdfInfo, setPdfInfo] = useState(null);
   const [loadingPdf, setLoadingPdf] = useState(false);
+  const [showJadualAnjal, setShowJadualAnjal] = useState(false);
 
   const handleDownloadPdf = async () => {
     if (!selectedTarikh) return;
@@ -1104,6 +1105,7 @@ function GpkPanel({ onClose, guruList, setGuruList, showToast, onSuccess, onErro
     setReliefItems([]);
     setSelectedHari(null);
     setPdfInfo(null);
+    setShowJadualAnjal(false);
     try {
       const data = await apiGet('getDashboardHariIni', { tarikh: tarikhToLoad });
       if (data.success) {
@@ -1299,7 +1301,10 @@ function GpkPanel({ onClose, guruList, setGuruList, showToast, onSuccess, onErro
                 type="date"
                 className="w-full p-3 border border-slate-300 rounded focus:border-slate-500 outline-none font-medium bg-slate-50"
                 value={selectedTarikh}
-                onChange={e => setSelectedTarikh(e.target.value)}
+                onChange={e => {
+                  setSelectedTarikh(e.target.value);
+                  setShowJadualAnjal(false);
+                }}
               />
             </div>
             <button 
@@ -1447,13 +1452,33 @@ function GpkPanel({ onClose, guruList, setGuruList, showToast, onSuccess, onErro
         </div>
 
 
-        <JadualAnjalPanel
-          selectedTarikh={selectedTarikh}
-          selectedHari={selectedHari || gpkDashboard?.hari}
-          guruList={guruList}
-          showToast={showToast}
-          onError={onError}
-        />
+        <div className="bg-white p-4 sm:p-5 rounded shadow border border-slate-200">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h3 className="font-black text-slate-800 uppercase text-base">MODUL JADUAL ANJAL</h3>
+              <p className="text-xs font-bold text-slate-500 uppercase mt-1">
+                Buka hanya bila ramai guru tidak hadir dan GPK perlu susun jadual anjal.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowJadualAnjal(prev => !prev)}
+              className={`px-5 py-3 rounded font-black uppercase text-sm shadow transition ${showJadualAnjal ? 'bg-slate-200 text-slate-800 hover:bg-slate-300' : 'bg-[#0F172A] text-white hover:bg-slate-800'}`}
+            >
+              {showJadualAnjal ? 'TUTUP JADUAL ANJAL' : 'BUKA JADUAL ANJAL'}
+            </button>
+          </div>
+        </div>
+
+        {showJadualAnjal && (
+          <JadualAnjalPanel
+            selectedTarikh={selectedTarikh}
+            selectedHari={selectedHari || gpkDashboard?.hari}
+            guruList={guruList}
+            showToast={showToast}
+            onError={onError}
+          />
+        )}
 
         <div className="bg-white p-6 rounded shadow border border-slate-200">
           <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center border-b pb-2 mb-2 gap-3">
